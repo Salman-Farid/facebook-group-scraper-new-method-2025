@@ -120,7 +120,32 @@ python main.py
 2. **`psycopg2.OperationalError`** – verify `DB_CONFIG` credentials in `main.py`
 3. **Table does not exist** – run `python supabase_setup.py` to create it
 4. **"See More" not expanding** – add the button label for your locale to `SEE_MORE_TEXTS` in `main.py`
-5. **No images captured** – Facebook CDN URL format may have changed; update the `img[src*='fbcdn']` selector in `extract_image_urls()`
+5. **No images captured** – the scraper now uses 4 independent extraction strategies
+   with full debug output per post. Read the `[IMG Post#N]` log lines to see exactly
+   what HTML / attributes are present, which strategy matched (or why none did), and a
+   3 000-character HTML snippet is auto-dumped when all strategies fail.
+
+### Understanding image debug logs
+
+Every post produces a block that looks like:
+
+```
+   [IMG Post#1] 🔍 Starting multi-strategy image extraction…
+   [IMG Post#1] ▶ Strategy 1 — JS <img> tag scan
+   [IMG Post#1]  Found 3 <img> element(s) in DOM
+   [IMG Post#1]  img[0] naturalSize=40x40 alt='…' cls='…'
+   [IMG Post#1]           src        = https://…fbcdn.net/…profile_pic.jpg
+   [IMG Post#1]   ↳ Skipped — too small (40x40), likely avatar/icon
+   [IMG Post#1]  img[1] naturalSize=960x540 alt='Post image' cls='…'
+   [IMG Post#1]           currentSrc = https://…fbcdn.net/…post_image.jpg
+   [IMG Post#1]  ✅ Captured image_1: https://…fbcdn.net/…post_image.jpg
+   …
+   [IMG Post#1] ✅ Total unique images captured: 2
+```
+
+If **all four strategies** return nothing, the scraper automatically dumps the first
+3 000 characters of the article's raw HTML so you can inspect the actual DOM structure
+Facebook is rendering and adjust selectors accordingly.
 
 ## 📄 License
 
