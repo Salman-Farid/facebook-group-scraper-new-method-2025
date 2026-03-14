@@ -16,7 +16,7 @@ load_dotenv()
 DESIRED_POSTS = 30
 GROUP_URL = "https://www.facebook.com/groups/163690418301859"
 STORAGE_STATE = "facebook_state.json"
-MAX_SCROLLS = 30  # safety limit
+MAX_SCROLLS = 5  # safety limit
 
 # Image extraction tuning
 # Images whose naturalWidth AND naturalHeight are both below this threshold
