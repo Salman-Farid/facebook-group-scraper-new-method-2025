@@ -133,8 +133,8 @@ python test_duplicate_detection.py
    - Unicode characters are normalized to NFC form
    - Case differences are ignored
    - If you're still seeing duplicates, run `python test_duplicate_detection.py` to verify the fix is working
-4. **"See More" not expanding** – add the button label for your locale to `SEE_MORE_TEXTS` in `main.py`
-5. **No images captured** – the scraper now uses 4 independent extraction strategies
+5. **"See More" not expanding** – add the button label for your locale to `SEE_MORE_TEXTS` in `main.py`
+6. **No images captured** – the scraper now uses 4 independent extraction strategies
    with full debug output per post. Read the `[IMG Post#N]` log lines to see exactly
    what HTML / attributes are present, which strategy matched (or why none did), and a
    3 000-character HTML snippet is auto-dumped when all strategies fail.
