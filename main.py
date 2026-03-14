@@ -2,6 +2,7 @@ from playwright.sync_api import sync_playwright
 import time
 import re
 import hashlib
+import html
 import os
 from datetime import datetime, timezone
 import psycopg2
@@ -160,52 +161,27 @@ def extract_image_urls(article) -> dict:
     Returns a dict like {"image_1": "https://…", "image_2": "https://…"}.
     Returns empty dict {} if no images found.
 
-    Facebook lazy-loads many images, so both ``src`` and ``data-src`` /
-    ``data-lazy-src`` attributes are checked.  Size-based filtering via
-    ``naturalWidth`` is intentionally avoided because the browser may not have
-    decoded the image yet, leading to false negatives.  Instead, URL-pattern
-    matching is used to skip known profile-picture / avatar thumbnails.
+    Scans the raw HTML of the article for any fbcdn.net image URL, regardless
+    of which attribute (src, href, data-src, etc.) it appears in.
     """
     urls: dict = {}
     if article is None:
         return urls
-    # URL sub-strings that reliably identify profile/avatar thumbnails to skip.
-    # These cover all common Facebook CDN size suffixes and content paths.
-    _SKIP_PATTERNS = (
-        "/t1.6435-1/",
-        "/t1.6435-9/",
-        "s32x32", "s40x40", "s50x50", "s60x60",
-        "s100x100", "s120x120",
-        "p32x32", "p40x40", "p50x50",
-    )
     try:
-        # Match images whose src OR data-src points to the Facebook CDN.
-        # The combined selector handles both already-loaded and lazy-loaded imgs.
-        imgs = article.locator(
-            "img[src*='fbcdn'], img[data-src*='fbcdn'], img[data-lazy-src*='fbcdn']"
+        page_html = article.inner_html()
+        # Extract all fbcdn.net image URLs from the raw HTML
+        raw_urls = re.findall(
+            r'https://[^\s"\'<>]+fbcdn\.net/[^\s"\'<>]+\.(?:jpg|jpeg|png|webp)[^\s"\'<>]*',
+            page_html,
         )
         seen: set = set()
         idx = 1
-        for i in range(imgs.count()):
-            try:
-                img = imgs.nth(i)
-                # Prefer the fully-resolved src; fall back to lazy-load attrs.
-                src = (
-                    img.get_attribute("src")
-                    or img.get_attribute("data-src")
-                    or img.get_attribute("data-lazy-src")
-                    or ""
-                )
-                if not src or src in seen:
-                    continue
-                # Skip obvious profile/avatar thumbnails by URL pattern.
-                if any(pat in src for pat in _SKIP_PATTERNS):
-                    continue
+        for src in raw_urls:
+            src = html.unescape(src)
+            if src not in seen:
                 urls[f"image_{idx}"] = src
                 seen.add(src)
                 idx += 1
-            except Exception:
-                pass
     except Exception:
         pass
     return urls
