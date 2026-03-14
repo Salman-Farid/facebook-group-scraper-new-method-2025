@@ -6,21 +6,33 @@ import os
 from datetime import datetime, timezone
 import psycopg2
 import psycopg2.extras
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 DESIRED_POSTS = 50
 GROUP_URL = "https://www.facebook.com/groups/163690418301859"
 STORAGE_STATE = "facebook_state.json"
-MAX_SCROLLS = 30  # safety limit
+MAX_SCROLLS = 10  # safety limit
 
 # Supabase / PostgreSQL connection settings.
-# Set the corresponding environment variables to override the defaults.
+# Must be set in environment variables or .env file
 DB_CONFIG = {
-    "user": os.getenv("SUPABASE_DB_USER", "postgres.csnwnuxoqzwqsdlpohjg"),
-    "password": os.getenv("SUPABASE_DB_PASSWORD", "?8HZ@CN/3MVwi2$"),
-    "host": os.getenv("SUPABASE_DB_HOST", "aws-0-ap-northeast-2.pooler.supabase.com"),
+    "user": os.getenv("SUPABASE_DB_USER"),
+    "password": os.getenv("SUPABASE_DB_PASSWORD"),
+    "host": os.getenv("SUPABASE_DB_HOST"),
     "port": int(os.getenv("SUPABASE_DB_PORT", "5432")),
     "dbname": os.getenv("SUPABASE_DB_NAME", "postgres"),
 }
+
+# Validate required environment variables
+if not DB_CONFIG["user"] or not DB_CONFIG["password"] or not DB_CONFIG["host"]:
+    raise ValueError(
+        "❌ Missing required Supabase credentials!\n"
+        "Please set SUPABASE_DB_USER, SUPABASE_DB_PASSWORD, and SUPABASE_DB_HOST "
+        "in your .env file or environment variables."
+    )
 
 # "See more" button labels across languages used by group members
 SEE_MORE_TEXTS = ["See more", "Xem thêm", "Mehr anzeigen", "Ver más"]

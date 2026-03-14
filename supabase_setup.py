@@ -14,10 +14,11 @@ import os
 DB_CONFIG = {
     "user": os.getenv("SUPABASE_DB_USER", "postgres.csnwnuxoqzwqsdlpohjg"),
     "password": os.getenv("SUPABASE_DB_PASSWORD", "?8HZ@CN/3MVwi2$"),
-    "host": os.getenv("SUPABASE_DB_HOST", "aws-0-ap-northeast-2.pooler.supabase.com"),
+    "host": os.getenv("SUPABASE_DB_HOST", "aws-1-ap-northeast-2.pooler.supabase.com"),
     "port": int(os.getenv("SUPABASE_DB_PORT", "5432")),
     "dbname": os.getenv("SUPABASE_DB_NAME", "postgres"),
 }
+
 
 DDL = """
 CREATE TABLE IF NOT EXISTS facebook_group_posts (
