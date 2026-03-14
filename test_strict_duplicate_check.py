@@ -5,6 +5,7 @@ Ensures that no duplicate posts can be saved regardless of how many times the sc
 """
 
 import os
+import sys
 import psycopg2
 import psycopg2.extras
 from datetime import datetime, timezone
@@ -17,9 +18,6 @@ import re
 load_dotenv()
 
 # Import the functions from main.py
-import sys
-import os
-
 # Get the directory of the current script and add parent directory to path
 current_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, current_dir)
