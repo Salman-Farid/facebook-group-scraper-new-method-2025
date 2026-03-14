@@ -11,10 +11,10 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 load_dotenv()
 
-DESIRED_POSTS = 50
+DESIRED_POSTS = 30
 GROUP_URL = "https://www.facebook.com/groups/163690418301859"
 STORAGE_STATE = "facebook_state.json"
-MAX_SCROLLS = 10  # safety limit
+MAX_SCROLLS = 30  # safety limit
 
 # Supabase / PostgreSQL connection settings.
 # Must be set in environment variables or .env file
