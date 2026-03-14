@@ -66,6 +66,28 @@ def _is_fbcdn_url(url: str) -> bool:
         return False
 
 
+# Patterns that identify non-post-content images served from fbcdn.net.
+# These match small profile thumbnails, emoji sprites, stickers, and
+# other UI assets that we never want to store as post images.
+_GARBAGE_URL_RE = re.compile(
+    r"(?:"
+    r"[/_]p\d{1,3}x\d{1,3}[/_]"       # size path component, e.g. /p40x40/
+    r"|[/_]\d{1,3}x\d{1,3}[/_]"        # plain size path,      e.g. /40x40/
+    r"|[?&]_nc_ht=emoji"                # emoji asset query param
+    r"|/emoji\.php"                     # emoji sprite sheet
+    r"|/reactions/"                     # reaction icon path
+    r"|/sticker"                        # sticker assets
+    r"|safe_image\.php"                 # external image proxy (not a post img)
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_garbage_url(url: str) -> bool:
+    """Return True if *url* looks like a profile picture, icon, or other UI asset."""
+    return bool(_GARBAGE_URL_RE.search(url))
+
+
 # ── helpers ────────────────────────────────────────────────────────────────────
 
 def extract_phone_numbers(text: str) -> list:
@@ -156,30 +178,34 @@ def get_ancestor_article(elem):
     """
     Return the nearest ancestor container for a post.
     Tries multiple strategies to find the article/post container.
+    Priority is given to the tightest known per-post boundary so that
+    images from neighbouring posts are never included.
     """
     try:
-        # Strategy 1: Look for explicit role='article'
-        article = elem.locator("xpath=ancestor::div[@role='article'][1]")
-        if article.count() > 0:
-            return article
-
-        # Strategy 2: Look for data-ad-rendering-role='story' (common in Facebook feeds)
+        # Strategy 1: data-ad-rendering-role='story' is the most reliable
+        # per-post boundary on Facebook feeds.
         article = elem.locator("xpath=ancestor::*[@data-ad-rendering-role='story'][1]")
         if article.count() > 0:
             return article
 
-        # Strategy 3: Look for role='article' (case-insensitive via ancestor search)
+        # Strategy 2: explicit role='article' div (single post card)
+        article = elem.locator("xpath=ancestor::div[@role='article'][1]")
+        if article.count() > 0:
+            return article
+
+        # Strategy 3: any element with role containing 'article'
         article = elem.locator("xpath=ancestor::*[contains(@role, 'article')][1]")
         if article.count() > 0:
             return article
 
-        # Strategy 4: Use the element's parent container (fallback)
-        # This handles cases where the element itself IS the post container
+        # Strategy 4: immediate parent as last resort – only if it looks
+        # like a single post (not a huge feed-level wrapper).
         parent = elem.locator("xpath=parent::*[1]")
         if parent.count() > 0:
             parent_html = parent.inner_html()
-            # Check if parent contains significant content
-            if len(parent_html) > 500:
+            # Use a generous upper bound: a container larger than ~50 KB is
+            # likely wrapping more than one post, so skip it.
+            if 500 < len(parent_html) < 50_000:
                 return parent
 
         return None
@@ -246,6 +272,8 @@ def extract_image_urls(article, post_num: int = 0, elem=None, _depth: int = 0) -
             return
         if not _is_fbcdn_url(src):
             return
+        if _is_garbage_url(src):
+            return
         if src in seen:
             return
         seen.add(src)
@@ -309,7 +337,28 @@ def extract_image_urls(article, post_num: int = 0, elem=None, _depth: int = 0) -
             """
             (el) => {
                 const rows = [];
+
+                // Build a set of <img> elements that live inside known
+                // non-content zones (post header, comment forms, action bar).
+                // We skip these so profile pictures and reaction icons are
+                // never included in the post's image list.
+                const excludedImgs = new Set();
+                const EXCLUDE_SELECTORS = [
+                    "[data-ad-rendering-role='story_header']",
+                    "[data-ad-rendering-role='story_actions']",
+                    "form",
+                    "[aria-label*='comment' i]",
+                ];
+                EXCLUDE_SELECTORS.forEach(sel => {
+                    try {
+                        el.querySelectorAll(sel).forEach(container => {
+                            container.querySelectorAll('img').forEach(img => excludedImgs.add(img));
+                        });
+                    } catch(e) {}
+                });
+
                 el.querySelectorAll('img').forEach(img => {
+                    if (excludedImgs.has(img)) return;
                     rows.push({
                         src:         img.getAttribute('src')          || '',
                         currentSrc:  img.currentSrc                   || '',
@@ -345,8 +394,28 @@ def extract_image_urls(article, post_num: int = 0, elem=None, _depth: int = 0) -
             r"""
             (el) => {
                 const results = [];
-                const walk = (node, path = '') => {
+
+                // Collect all descendant nodes that belong to non-content
+                // zones so we can skip them during the walk.
+                const excludedNodes = new Set();
+                const EXCLUDE_SELECTORS = [
+                    "[data-ad-rendering-role='story_header']",
+                    "[data-ad-rendering-role='story_actions']",
+                    "form",
+                    "[aria-label*='comment' i]",
+                ];
+                EXCLUDE_SELECTORS.forEach(sel => {
+                    try {
+                        el.querySelectorAll(sel).forEach(container => {
+                            excludedNodes.add(container);
+                            container.querySelectorAll('*').forEach(n => excludedNodes.add(n));
+                        });
+                    } catch(e) {}
+                });
+
+                const walk = (node) => {
                     if (node.nodeType !== 1) return;
+                    if (excludedNodes.has(node)) return;
                     const bg = window.getComputedStyle(node).backgroundImage || '';
                     const matches = bg.match(/url\(["']?([^"')]+)["']?\)/g) || [];
                     matches.forEach(m => {
@@ -355,7 +424,7 @@ def extract_image_urls(article, post_num: int = 0, elem=None, _depth: int = 0) -
                             results.push(inner[1]);
                         }
                     });
-                    node.childNodes.forEach(child => walk(child, path + '/' + node.tagName));
+                    node.childNodes.forEach(child => walk(child));
                 };
                 walk(el);
                 return results;
@@ -380,7 +449,26 @@ def extract_image_urls(article, post_num: int = 0, elem=None, _depth: int = 0) -
             (el) => {{
                 const ATTRS = {_DATA_ATTRS};
                 const rows = [];
+
+                // Skip nodes that live inside known non-content zones.
+                const excludedNodes = new Set();
+                const EXCLUDE_SELECTORS = [
+                    "[data-ad-rendering-role='story_header']",
+                    "[data-ad-rendering-role='story_actions']",
+                    "form",
+                    "[aria-label*='comment' i]",
+                ];
+                EXCLUDE_SELECTORS.forEach(sel => {{
+                    try {{
+                        el.querySelectorAll(sel).forEach(container => {{
+                            excludedNodes.add(container);
+                            container.querySelectorAll('*').forEach(n => excludedNodes.add(n));
+                        }});
+                    }} catch(e) {{}}
+                }});
+
                 el.querySelectorAll('*').forEach(node => {{
+                    if (excludedNodes.has(node)) return;
                     ATTRS.forEach(attr => {{
                         const val = node.getAttribute(attr);
                         if (val && val.includes('fbcdn.net')) {{
@@ -399,7 +487,27 @@ def extract_image_urls(article, post_num: int = 0, elem=None, _depth: int = 0) -
 
     # ── Strategy 4: raw inner-HTML regex (final fallback) ────────────────────
     try:
-        raw_html = article.inner_html()
+        # Strip header and action-bar HTML from the raw snapshot so that
+        # profile pictures and reaction icons embedded there are not captured.
+        raw_html = article.evaluate(
+            """
+            (el) => {
+                const clone = el.cloneNode(true);
+                const STRIP_SELECTORS = [
+                    "[data-ad-rendering-role='story_header']",
+                    "[data-ad-rendering-role='story_actions']",
+                    "form",
+                    "[aria-label*='comment' i]",
+                ];
+                STRIP_SELECTORS.forEach(sel => {
+                    try {
+                        clone.querySelectorAll(sel).forEach(n => n.remove());
+                    } catch(e) {}
+                });
+                return clone.innerHTML;
+            }
+            """
+        )
         raw_hits = re.findall(
             r"https?://[^\s\"'<>\\]*fbcdn\.net[^\s\"'<>\\]*"
             r"\.(?:jpg|jpeg|png|webp|avif)[^\s\"'<>\\]*",
