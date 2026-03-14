@@ -7,10 +7,11 @@ Tests the download_image function with a sample image URL.
 import os
 import requests
 from pathlib import Path
+from typing import Tuple, Optional
 
 IMAGES_DIR = "images"
 
-def download_image(url: str, filepath_base: str) -> tuple:
+def download_image(url: str, filepath_base: str) -> Tuple[bool, Optional[str]]:
     """
     Download an image from a URL and save it to the specified filepath.
     The actual filepath will have the correct extension based on Content-Type.

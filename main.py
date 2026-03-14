@@ -4,6 +4,7 @@ import re
 import hashlib
 import os
 from datetime import datetime, timezone
+from typing import Tuple, Optional
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
@@ -160,7 +161,7 @@ def extract_post_url(article) -> str | None:
     return None
 
 
-def download_image(url: str, filepath_base: str) -> tuple[bool, str | None]:
+def download_image(url: str, filepath_base: str) -> Tuple[bool, Optional[str]]:
     """
     Download an image from a URL and save it to the specified filepath.
     The actual filepath will have the correct extension based on Content-Type.
@@ -242,12 +243,12 @@ def extract_image_urls(article, post_hash: str) -> dict:
                         }
                         filename = os.path.basename(final_filepath)
                         print(f"      ✓ Image {idx} downloaded: {filename}")
-                        idx += 1  # Only increment on success
+                        # Only mark as seen and increment counter after successful download
+                        seen.add(src)
+                        idx += 1
                     else:
-                        # Skip failed downloads to maintain consistent data
-                        print(f"      ⟳ Skipping failed image {idx}")
-                    
-                    seen.add(src)
+                        # Skip failed downloads - don't add to seen set to allow potential retry
+                        print(f"      ⟳ Skipping failed image from {src[:50]}...")
             except Exception as e:
                 print(f"      ⚠️  Error processing image {i}: {e}")
                 pass
