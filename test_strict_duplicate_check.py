@@ -18,7 +18,12 @@ load_dotenv()
 
 # Import the functions from main.py
 import sys
-sys.path.insert(0, '/home/runner/work/facebook-group-scraper-new-method-2025/facebook-group-scraper-new-method-2025')
+import os
+
+# Get the directory of the current script and add parent directory to path
+current_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, current_dir)
+
 from main import normalize_text_for_hash, make_post_hash, post_exists_in_db, save_post_to_db
 
 DB_CONFIG = {

@@ -653,12 +653,12 @@ def run_scraper():
                     
                     # STRICT duplicate check: First check in-memory cache
                     if post_hash in processed_hashes:
-                        print(f"   ⟳ Post already processed in this session – skipped")
+                        print(f"   ⟳ Post already processed in this session - skipped")
                         continue
                     
                     # STRICT duplicate check: Then check database before processing
                     if post_exists_in_db(conn, post_hash):
-                        print(f"   ⟳ Post already exists in database – skipped")
+                        print(f"   ⟳ Post already exists in database - skipped")
                         processed_hashes.add(post_hash)  # Add to cache to avoid future DB checks
                         continue
                     

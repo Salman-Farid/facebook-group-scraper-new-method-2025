@@ -56,12 +56,12 @@ post_hash = make_post_hash(text)
 
 # STRICT duplicate check: First check in-memory cache
 if post_hash in processed_hashes:
-    print(f"   ⟳ Post already processed in this session – skipped")
+    print(f"   ⟳ Post already processed in this session - skipped")
     continue
 
 # STRICT duplicate check: Then check database before processing
 if post_exists_in_db(conn, post_hash):
-    print(f"   ⟳ Post already exists in database – skipped")
+    print(f"   ⟳ Post already exists in database - skipped")
     processed_hashes.add(post_hash)  # Add to cache to avoid future DB checks
     continue
 
@@ -122,9 +122,9 @@ python main.py
 ```
 
 The strict duplicate checking happens automatically. You'll see messages like:
-- `⟳ Post already processed in this session – skipped` (in-memory cache hit)
-- `⟳ Post already exists in database – skipped` (database check hit)
-- `⟳ Post already in DB – skipped` (ON CONFLICT clause triggered)
+- `⟳ Post already processed in this session - skipped` (in-memory cache hit)
+- `⟳ Post already exists in database - skipped` (database check hit)
+- `⟳ Post already in DB - skipped` (ON CONFLICT clause triggered)
 
 ## Security & Performance Notes
 
