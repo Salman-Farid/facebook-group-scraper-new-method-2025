@@ -1,4 +1,4 @@
-# Facebook Group Content Scraper
+# Facebook Group Content Scraper-for flutter app
 
 A robust web scraping tool built with Playwright to extract posts from Facebook groups efficiently and reliably.
 
