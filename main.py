@@ -1,76 +1,269 @@
 from playwright.sync_api import sync_playwright
 import time
+import re
+import hashlib
+import os
+from datetime import datetime, timezone
+import psycopg2
+import psycopg2.extras
 
 DESIRED_POSTS = 50
-# ⚠️ THAY ĐỔI URL NÀY THÀNH URL NHÓM FACEBOOK CỦA BẠN
 GROUP_URL = "https://www.facebook.com/groups/163690418301859"
-OUTPUT_FILE = "fb_posts_output.txt"
 STORAGE_STATE = "facebook_state.json"
-MAX_SCROLLS   = 30    # safety limit
+MAX_SCROLLS = 30  # safety limit
+
+# Supabase / PostgreSQL connection settings.
+# Set the corresponding environment variables to override the defaults.
+DB_CONFIG = {
+    "user": os.getenv("SUPABASE_DB_USER", "postgres.csnwnuxoqzwqsdlpohjg"),
+    "password": os.getenv("SUPABASE_DB_PASSWORD", "?8HZ@CN/3MVwi2$"),
+    "host": os.getenv("SUPABASE_DB_HOST", "aws-0-ap-northeast-2.pooler.supabase.com"),
+    "port": int(os.getenv("SUPABASE_DB_PORT", "5432")),
+    "dbname": os.getenv("SUPABASE_DB_NAME", "postgres"),
+}
+
+# "See more" button labels across languages used by group members
+SEE_MORE_TEXTS = ["See more", "Xem thêm", "Mehr anzeigen", "Ver más"]
+
+
+# ── helpers ────────────────────────────────────────────────────────────────────
+
+def extract_phone_numbers(text: str) -> list:
+    """Return a deduplicated list of phone-number strings found in *text*."""
+    # Matches BD (+880 / 01…) numbers as well as generic international formats
+    pattern = (
+        r"(?:(?:\+?880)|0)[\s\-]?(?:1[3-9])[\s\-]?\d{2}[\s\-]?\d{3}[\s\-]?\d{3}"
+        r"|(?:\+?\d{1,3}[\s\-]?)?\(?\d{3,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4}"
+    )
+    return list(dict.fromkeys(re.findall(pattern, text)))
+
+
+def extract_hashtags(text: str) -> list:
+    """Return a deduplicated list of hashtag strings found in *text*."""
+    return list(dict.fromkeys(re.findall(r"#\w+", text)))
+
+
+def make_post_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+# ── database helpers ───────────────────────────────────────────────────────────
+
+def ensure_table(conn) -> None:
+    """Create the facebook_group_posts table if it does not already exist."""
+    ddl = """
+    CREATE TABLE IF NOT EXISTS facebook_group_posts (
+        id          BIGSERIAL PRIMARY KEY,
+        post_text   TEXT,
+        phone_numbers TEXT[],
+        hashtags    TEXT[],
+        image_urls  JSONB,
+        post_url    TEXT,
+        post_hash   TEXT UNIQUE NOT NULL,
+        scraped_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    );
+    """
+    with conn.cursor() as cur:
+        cur.execute(ddl)
+    conn.commit()
+    print("✅ Table facebook_group_posts is ready.")
+
+
+def save_post_to_db(conn, post: dict) -> bool:
+    """
+    Insert a post into Supabase. Skips silently if post_hash already exists.
+    Returns True when a new row was inserted, False when it was a duplicate.
+    """
+    sql = """
+        INSERT INTO facebook_group_posts
+            (post_text, phone_numbers, hashtags, image_urls, post_url, post_hash, scraped_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (post_hash) DO NOTHING
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (
+            post["post_text"],
+            post["phone_numbers"],
+            post["hashtags"],
+            psycopg2.extras.Json(post["image_urls"]),
+            post["post_url"],
+            post["post_hash"],
+            post["scraped_at"],
+        ))
+        inserted = cur.rowcount == 1
+    conn.commit()
+    return inserted
+
+
+# ── page-level extraction helpers ─────────────────────────────────────────────
+
+def click_see_more_buttons(page) -> None:
+    """Expand all truncated posts by clicking every visible 'See more' variant."""
+    for label in SEE_MORE_TEXTS:
+        try:
+            buttons = page.locator(f"text='{label}'")
+            for i in range(buttons.count()):
+                try:
+                    buttons.nth(i).click(timeout=3000)
+                    time.sleep(0.2)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+
+def get_ancestor_article(elem):
+    """Return the nearest ancestor <div role='article'> element or None."""
+    try:
+        article = elem.locator("xpath=ancestor::div[@role='article'][1]")
+        return article if article.count() > 0 else None
+    except Exception:
+        return None
+
+
+def extract_post_url(article) -> str | None:
+    """Find the permalink of a post from its article container."""
+    if article is None:
+        return None
+    try:
+        # Timestamp-style links that include the post ID
+        for pattern in [
+            "a[href*='/groups/'][href*='/?id=']",
+            "a[href*='/groups/'][href*='/posts/']",
+            "a[href*='/permalink/']",
+        ]:
+            links = article.locator(pattern)
+            if links.count() > 0:
+                href = links.nth(0).get_attribute("href") or ""
+                # Strip query string to get the clean permalink
+                return href.split("?")[0] if "?" in href else href
+    except Exception:
+        pass
+    return None
+
+
+def extract_image_urls(article) -> dict:
+    """
+    Collect CDN image URLs from the post's article container.
+    Returns a dict like {"image_1": "https://…", "image_2": "https://…"}.
+    """
+    urls: dict = {}
+    if article is None:
+        return urls
+    try:
+        imgs = article.locator("img[src*='fbcdn']")
+        seen: set = set()
+        idx = 1
+        for i in range(imgs.count()):
+            try:
+                src = imgs.nth(i).get_attribute("src") or ""
+                # Skip tiny profile/avatar images (usually <200px wide)
+                width_attr = imgs.nth(i).get_attribute("width") or "0"
+                width = int(width_attr) if width_attr.isdigit() else 0
+                if src and src not in seen and width >= 200:
+                    urls[f"image_{idx}"] = src
+                    seen.add(src)
+                    idx += 1
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return urls
+
+
+# ── main scraper ───────────────────────────────────────────────────────────────
 
 def run_scraper():
+    # 1. Connect to Supabase
+    print("🔌 Connecting to Supabase…")
+    conn = psycopg2.connect(**DB_CONFIG)
+    print("✅ Connected to Supabase.")
+    ensure_table(conn)
+
+    # 2. Launch browser with saved login session
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=False)
         ctx = browser.new_context(storage_state=STORAGE_STATE)
         page = ctx.new_page()
 
-        print("🔄 Navigating to group...")
+        print("🔄 Navigating to group…")
         page.goto(GROUP_URL)
-        time.sleep(5)  # wait a bit for feed to load
+        time.sleep(5)  # let the feed load
 
-        posts = []
+        posts_saved = 0
         scrolls = 0
-        processed_posts = set()  # track processed posts by their text content
+        processed_hashes: set = set()
 
-        # keep scrolling until we have DESIRED_POSTS or reach MAX_SCROLLS
-        while len(posts) < DESIRED_POSTS and scrolls < MAX_SCROLLS:
+        while posts_saved < DESIRED_POSTS and scrolls < MAX_SCROLLS:
             scrolls += 1
             print(f"📜 Scroll {scrolls}/{MAX_SCROLLS}…")
 
-            # scroll the entire page
+            # Scroll to bottom to trigger lazy-loading
             page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-            time.sleep(2)  # wait a bit for new content
+            time.sleep(2)
 
-            # click all "See more" buttons in the feed
-            more_buttons = page.locator("text='Xem thêm'")
-            for i in range(more_buttons.count()):
-                try:
-                    more_buttons.nth(i).click(timeout=500)
-                except:
-                    pass
+            # Expand truncated posts
+            click_see_more_buttons(page)
             time.sleep(1)
 
-            # find all story_message divs
+            # Locate all post text containers
             elems = page.locator("div[data-ad-rendering-role='story_message']")
             count = elems.count()
-            print(f"   → {count} elements found in DOM")
+            print(f"   → {count} post text elements in DOM")
 
-            # process all elements and check for new posts
             for i in range(count):
+                if posts_saved >= DESIRED_POSTS:
+                    break
                 try:
-                    text = elems.nth(i).inner_text().strip()
-                    if text and text not in processed_posts:
-                        posts.append(text)
-                        processed_posts.add(text)
-                        print(f"   ✓ Post #{len(posts)} loaded")
-                        if len(posts) >= DESIRED_POSTS:
-                            break
+                    elem = elems.nth(i)
+                    text = elem.inner_text().strip()
+                    if not text:
+                        continue
+
+                    post_hash = make_post_hash(text)
+                    if post_hash in processed_hashes:
+                        continue
+                    processed_hashes.add(post_hash)
+
+                    article = get_ancestor_article(elem)
+                    post_url = extract_post_url(article)
+                    image_urls = extract_image_urls(article)
+                    phone_numbers = extract_phone_numbers(text)
+                    hashtags = extract_hashtags(text)
+
+                    post = {
+                        "post_text": text,
+                        "phone_numbers": phone_numbers,
+                        "hashtags": hashtags,
+                        "image_urls": image_urls,
+                        "post_url": post_url,
+                        "post_hash": post_hash,
+                        "scraped_at": datetime.now(timezone.utc),
+                    }
+
+                    if save_post_to_db(conn, post):
+                        posts_saved += 1
+                        print(
+                            f"   ✓ Post #{posts_saved:>3} saved │ "
+                            f"📷 {len(image_urls)} image(s) │ "
+                            f"📞 {len(phone_numbers)} phone(s) │ "
+                            f"🏷  {len(hashtags)} hashtag(s)"
+                        )
+                    else:
+                        print(f"   ⟳ Post already in DB – skipped")
+
                 except Exception as e:
-                    print(f"   ⚠️ Error processing element {i}: {e}")
+                    print(f"   ⚠️  Error processing element {i}: {e}")
                     continue
 
-            # If no new posts found in this scroll, wait a bit more
-            if len(posts) < DESIRED_POSTS:
+            if posts_saved < DESIRED_POSTS:
                 time.sleep(1)
 
-        # write results to file
-        print(f"✅ Total {len(posts)} posts found. Saving…")
-        with open(OUTPUT_FILE, "w", encoding="utf-8") as f:
-            for idx, ptext in enumerate(posts[:DESIRED_POSTS], 1):
-                f.write(f"--- POST {idx} ---\n{ptext}\n\n")
-
         browser.close()
-        print(f"📁 Done! Check {OUTPUT_FILE}")
+
+    conn.close()
+    print(f"\n🎉 Done! {posts_saved} new post(s) saved to Supabase.")
+
 
 if __name__ == "__main__":
     run_scraper()

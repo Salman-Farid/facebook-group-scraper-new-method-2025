@@ -1,26 +1,45 @@
-# Facebook Group Content Scraper-for flutter app
+# Facebook Group Content Scraper – Supabase Edition (2025)
 
-A robust web scraping tool built with Playwright to extract posts from Facebook groups efficiently and reliably.
+A robust web scraping tool built with Playwright that extracts posts from Facebook groups and stores every post directly in **Supabase (PostgreSQL)** – including images, phone numbers, hashtags, and post URLs.
 
 ## 🚀 Features
 
-- **Smart Content Deduplication**: Prevents duplicate posts using content-based tracking
-- **Session Management**: Saves login state for seamless re-authentication
-- **Dynamic Content Loading**: Handles Facebook's infinite scroll and "See More" buttons
-- **Error Resilience**: Robust error handling for network issues and DOM changes
-- **Configurable**: Easy to customize number of posts and target groups
+- **Supabase storage**: every scraped post is persisted to the `facebook_group_posts` table instead of a local text file
+- **Image extraction**: collects all CDN image URLs from each post and stores them as a JSON object in the `image_urls` column
+- **Structured data**: phone numbers and hashtags are extracted automatically and stored in dedicated array columns
+- **Post permalink**: the URL of each post is captured and stored in `post_url`
+- **Smart deduplication**: SHA-256 hash of the post text prevents duplicate rows across scraping sessions
+- **Multi-language "See more"**: expands truncated posts for English, Vietnamese, German and Spanish UIs
+- **Session management**: saves login state for seamless re-authentication
+- **Error resilience**: robust error handling for network issues and DOM changes
 
 ## 🛠️ Technologies Used
 
-- **Python 3.8+**
-- **Playwright**: Modern web automation framework
-- **Chrome Browser**: Headless and headed modes supported
+- **Python 3.10+**
+- **Playwright** – browser automation
+- **psycopg2** – PostgreSQL / Supabase driver
+- **Chrome** – headed mode (logged-in session)
 
 ## 📋 Prerequisites
 
 ```bash
-pip install playwright
-playwright install
+pip install -r requirements.txt
+playwright install chromium
+```
+
+## 🗄️ Database Schema
+
+```sql
+CREATE TABLE facebook_group_posts (
+    id            BIGSERIAL PRIMARY KEY,
+    post_text     TEXT,
+    phone_numbers TEXT[],
+    hashtags      TEXT[],
+    image_urls    JSONB,          -- {"image_1": "https://...", "image_2": "https://..."}
+    post_url      TEXT,
+    post_hash     TEXT UNIQUE NOT NULL,
+    scraped_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 ```
 
 ## 🔧 Installation & Setup
@@ -34,87 +53,74 @@ cd facebook-group-scraper
 2. **Install dependencies:**
 ```bash
 pip install -r requirements.txt
+playwright install chromium
 ```
 
-3. **Configure your target group:**
-   - Edit `main.py` and update `GROUP_URL` with your target Facebook group URL
-   - Replace `YOUR_GROUP_ID_HERE` with the actual group ID from Facebook
-   - Example: `"https://www.facebook.com/groups/123456789012345"`
-   - Set `DESIRED_POSTS` to the number of posts you want to extract
+3. **Create the Supabase table (first time only):**
+```bash
+python supabase_setup.py
+```
+
+4. **Configure your target group** – edit `main.py`:
+   - `GROUP_URL` → your Facebook group URL
+   - `DESIRED_POSTS` → how many posts to collect per run
+   - Update `DB_CONFIG` with your own Supabase credentials if needed
 
 ## 🚀 Usage
 
-### Step 1: Login and Save Session
+### Step 1 – Save a login session
 ```bash
 python login_and_save_state.py
 ```
-- A browser window will open
-- Log in to Facebook manually
-- Return to terminal and press Enter to save the session
+- A browser window will open; log in to Facebook manually
+- Return to the terminal and press Enter to save the session to `facebook_state.json`
 
-### Step 2: Run the Scraper
+### Step 2 – Run the scraper
 ```bash
 python main.py
 ```
-- The scraper will automatically navigate to your target group
-- Extract posts while handling infinite scroll
-- Save results to `fb_posts_output.txt`
-
-## 📊 Output Format
-
-```
---- POST 1 ---
-[Post content here]
-
---- POST 2 ---
-[Post content here]
-...
-```
+- The scraper navigates to the target group, scrolls the feed, expands all "See more" buttons, and upserts each post to Supabase.
+- Live progress is printed for every saved post, including image count, phone numbers found, and hashtags.
 
 ## ⚙️ Configuration
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `DESIRED_POSTS` | Number of posts to extract | 50 |
-| `GROUP_URL` | Target Facebook group URL | YOUR_GROUP_ID_HERE |
-| `MAX_SCROLLS` | Maximum scroll attempts | 30 |
-| `OUTPUT_FILE` | Output file name | fb_posts_output.txt |
+| `DESIRED_POSTS` | Number of posts to extract per run | `50` |
+| `GROUP_URL` | Target Facebook group URL | (see `main.py`) |
+| `MAX_SCROLLS` | Maximum scroll attempts (safety limit) | `30` |
+| `DB_CONFIG` | Supabase PostgreSQL connection settings | (see `main.py`) |
+
+## 📊 Sample Terminal Output
+
+```
+🔌 Connecting to Supabase…
+✅ Connected to Supabase.
+✅ Table facebook_group_posts is ready.
+🔄 Navigating to group…
+📜 Scroll 1/30…
+   → 12 post text elements in DOM
+   ✓ Post #  1 saved │ 📷 3 image(s) │ 📞 1 phone(s) │ 🏷  2 hashtag(s)
+   ✓ Post #  2 saved │ 📷 0 image(s) │ 📞 2 phone(s) │ 🏷  0 hashtag(s)
+   ⟳ Post already in DB – skipped
+   …
+🎉 Done! 50 new post(s) saved to Supabase.
+```
 
 ## 🔒 Privacy & Ethics
 
-- **Respectful Scraping**: Built-in delays to avoid overwhelming servers
-- **Session Management**: Uses saved login state to avoid repeated authentication
-- **Content Only**: Extracts only public post content, no private data
-- **Rate Limiting**: Implements appropriate delays between actions
+- **Respectful scraping**: built-in delays to avoid overwhelming servers
+- **Session management**: uses saved login state to avoid repeated authentication
+- **Content only**: extracts only visible post content, no private data
+- **Rate limiting**: appropriate delays between scroll actions
 
 ## 🐛 Troubleshooting
 
-### Common Issues:
-
-1. **"FileNotFoundError: facebook_state.json"**
-   - Run `login_and_save_state.py` first and complete the login process
-
-2. **Posts being skipped**
-   - The latest version includes content-based deduplication to prevent this
-   - Check your internet connection and Facebook group accessibility
-
-3. **"See More" buttons not expanding**
-   - The scraper automatically handles Dutch "Meer weergeven" buttons
-   - For other languages, update the button text in the code
-
-## 📈 Performance
-
-- **Success Rate**: 100% (fixed from previous 98% due to content-based deduplication)
-- **Speed**: ~2-3 seconds per scroll with built-in delays
-- **Reliability**: Handles Facebook's dynamic content loading
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Test thoroughly
-5. Submit a pull request
+1. **`FileNotFoundError: facebook_state.json`** – run `login_and_save_state.py` first
+2. **`psycopg2.OperationalError`** – verify `DB_CONFIG` credentials in `main.py`
+3. **Table does not exist** – run `python supabase_setup.py` to create it
+4. **"See More" not expanding** – add the button label for your locale to `SEE_MORE_TEXTS` in `main.py`
+5. **No images captured** – Facebook CDN URL format may have changed; update the `img[src*='fbcdn']` selector in `extract_image_urls()`
 
 ## 📄 License
 
@@ -122,8 +128,8 @@ This project is for educational and portfolio purposes. Please respect Facebook'
 
 ## 👨‍💻 Author
 
-[Your Name] - Web Scraping & Automation Specialist
+[Your Name] – Web Scraping & Automation Specialist
 
 ---
 
-**Note**: This tool is designed for educational purposes and portfolio demonstration. Always respect website terms of service and use responsibly. 
+**Note**: This tool is designed for educational purposes and portfolio demonstration. Always use responsibly.
