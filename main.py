@@ -50,6 +50,24 @@ if not DB_CONFIG["user"] or not DB_CONFIG["password"] or not DB_CONFIG["host"]:
 # "See more" button labels across languages used by group members
 SEE_MORE_TEXTS = ["See more", "Xem thêm", "Mehr anzeigen", "Ver más"]
 
+# JavaScript snippet used in two places: find how many levels up the DOM we
+# need to climb from a story_message element to reach its post-card ancestor
+# (identified by the presence of a story_header child).
+_STORY_HEADER_ANCESTOR_DEPTH_JS = """
+(el) => {
+    let node = el.parentElement;
+    let d = 1;
+    while (node && node !== document.body && d <= 15) {
+        if (node.querySelector("[data-ad-rendering-role='story_header']")) {
+            return d;
+        }
+        node = node.parentElement;
+        d++;
+    }
+    return -1;
+}
+"""
+
 
 # ── URL helpers ────────────────────────────────────────────────────────────────
 
@@ -198,14 +216,26 @@ def get_ancestor_article(elem):
         if article.count() > 0:
             return article
 
-        # Strategy 4: immediate parent as last resort – only if it looks
-        # like a single post (not a huge feed-level wrapper).
+        # Strategy 4: JavaScript DOM walk-up – find the nearest ancestor that
+        # contains a story_header element.  An element that owns both a
+        # story_header and a story_message child is the complete post card,
+        # regardless of which role / attribute labels are present on the
+        # wrapper itself.
+        depth = elem.evaluate(_STORY_HEADER_ANCESTOR_DEPTH_JS)
+        if isinstance(depth, (int, float)) and depth > 0:
+            path = "xpath=" + "/".join([".."] * int(depth))
+            article = elem.locator(path)
+            if article.count() > 0:
+                return article
+
+        # Strategy 5: immediate parent as last resort – only if it looks
+        # like a single post (not a huge feed-level wrapper).  The upper
+        # bound is raised to 200 KB to accommodate rich posts with many
+        # embedded images.
         parent = elem.locator("xpath=parent::*[1]")
         if parent.count() > 0:
             parent_html = parent.inner_html()
-            # Use a generous upper bound: a container larger than ~50 KB is
-            # likely wrapping more than one post, so skip it.
-            if 500 < len(parent_html) < 50_000:
+            if 500 < len(parent_html) < 200_000:
                 return parent
 
         return None
@@ -247,21 +277,31 @@ def extract_image_urls(article, post_num: int = 0, elem=None, _depth: int = 0) -
         if _depth >= 2:
             return urls
 
-        # If article is None but elem exists, try to extract from elem directly
+        # If article is None but elem exists, try increasingly broad fallbacks.
         if elem is not None:
             try:
-                # Try to find story container ancestors
-                potential_article = elem.locator("xpath=ancestor::*[@data-ad-rendering-role='story'][1]")
-                if potential_article.count() > 0:
-                    return extract_image_urls(potential_article, post_num, None, _depth + 1)
-
-                # If no explicit story container found, use the element's parent as fallback
-                parent = elem.locator("xpath=ancestor::*[1]")
-                if parent.count() > 0:
-                    return extract_image_urls(parent, post_num, None, _depth + 1)
-
+                # Fallback A: re-try the JS walk-up strategy (same logic as
+                # Strategy 4 in get_ancestor_article) in case the caller skipped
+                # get_ancestor_article.
+                depth = elem.evaluate(_STORY_HEADER_ANCESTOR_DEPTH_JS)
+                if isinstance(depth, (int, float)) and depth > 0:
+                    path = "xpath=" + "/".join([".."] * int(depth))
+                    potential_article = elem.locator(path)
+                    if potential_article.count() > 0:
+                        return extract_image_urls(
+                            potential_article, post_num, None, _depth + 1
+                        )
             except Exception:
                 pass
+
+            try:
+                # Fallback B: use elem itself (the story_message div).
+                # Images embedded directly inside the text container will
+                # still be captured even without a broader post wrapper.
+                return extract_image_urls(elem, post_num, None, _depth + 1)
+            except Exception:
+                pass
+
         return urls
 
 
@@ -584,18 +624,27 @@ def run_scraper():
 
                     if article is None:
                         print(f"   [Post#{posts_saved + 1}] ⚠️  No article ancestor found. Inspecting elem location…")
-                        elem_info = elem.evaluate(
-                            """
-                            (el) => {
-                                return {
-                                    tag: el.tagName,
-                                    dataAdRole: el.getAttribute('data-ad-rendering-role'),
-                                    className: el.className.slice(0, 100),
-                                };
-                            }
-                            """
-                        )
-                        print(f"   [Post#{posts_saved + 1}] 📌 Element: <{elem_info['tag']}> class='{elem_info['className'][:80]}'")
+                        try:
+                            elem_info = elem.evaluate(
+                                """
+                                (el) => {
+                                    return {
+                                        tag: el.tagName || '',
+                                        dataAdRole: el.getAttribute('data-ad-rendering-role') || '',
+                                        className: (el.className && typeof el.className === 'string')
+                                            ? el.className.slice(0, 100) : '',
+                                    };
+                                }
+                                """
+                            )
+                            if isinstance(elem_info, dict):
+                                tag = elem_info.get('tag', '')
+                                class_name = elem_info.get('className', '')
+                                print(f"   [Post#{posts_saved + 1}] 📌 Element: <{tag}> class='{class_name[:80]}'")
+                            else:
+                                print(f"   [Post#{posts_saved + 1}] 📌 Element info not available")
+                        except Exception as dbg_e:
+                            print(f"   [Post#{posts_saved + 1}] 📌 Element info unavailable: {dbg_e}")
 
                     # Scroll the article into view and pause so lazy-load images
                     # have a chance to fire their network requests and resolve
