@@ -159,38 +159,47 @@ def extract_image_urls(article) -> dict:
     Collect CDN image URLs from the post's article container.
     Returns a dict like {"image_1": "https://…", "image_2": "https://…"}.
     Returns empty dict {} if no images found.
+
+    Facebook lazy-loads many images, so both ``src`` and ``data-src`` /
+    ``data-lazy-src`` attributes are checked.  Size-based filtering via
+    ``naturalWidth`` is intentionally avoided because the browser may not have
+    decoded the image yet, leading to false negatives.  Instead, URL-pattern
+    matching is used to skip known profile-picture / avatar thumbnails.
     """
     urls: dict = {}
     if article is None:
         return urls
-    # URL sub-strings that identify small profile/avatar thumbnails to skip
-    _SKIP_PATTERNS = ("/t1.6435-1/", "/t1.6435-9/", "s50x50", "s60x60", "s120x120")
+    # URL sub-strings that reliably identify profile/avatar thumbnails to skip.
+    # These cover all common Facebook CDN size suffixes and content paths.
+    _SKIP_PATTERNS = (
+        "/t1.6435-1/",
+        "/t1.6435-9/",
+        "s32x32", "s40x40", "s50x50", "s60x60",
+        "s100x100", "s120x120",
+        "p32x32", "p40x40", "p50x50",
+    )
     try:
-        imgs = article.locator("img[src*='fbcdn']")
+        # Match images whose src OR data-src points to the Facebook CDN.
+        # The combined selector handles both already-loaded and lazy-loaded imgs.
+        imgs = article.locator(
+            "img[src*='fbcdn'], img[data-src*='fbcdn'], img[data-lazy-src*='fbcdn']"
+        )
         seen: set = set()
         idx = 1
         for i in range(imgs.count()):
             try:
                 img = imgs.nth(i)
-                src = img.get_attribute("src") or ""
+                # Prefer the fully-resolved src; fall back to lazy-load attrs.
+                src = (
+                    img.get_attribute("src")
+                    or img.get_attribute("data-src")
+                    or img.get_attribute("data-lazy-src")
+                    or ""
+                )
                 if not src or src in seen:
                     continue
-                # Skip obvious profile/avatar thumbnails by URL pattern
+                # Skip obvious profile/avatar thumbnails by URL pattern.
                 if any(pat in src for pat in _SKIP_PATTERNS):
-                    continue
-                # Use the image's natural pixel width (requires image to be
-                # loaded in the DOM).  Falls back to the HTML width attribute,
-                # then to 0 if neither is available.
-                try:
-                    result = img.evaluate("el => el.naturalWidth")
-                    natural_width = result if isinstance(result, int) else 0
-                except Exception:
-                    natural_width = 0
-                if natural_width == 0:
-                    width_attr = img.get_attribute("width") or "0"
-                    natural_width = int(width_attr) if width_attr.isdigit() else 0
-                # Skip tiny images (profile pictures, icons, etc.)
-                if 0 < natural_width < 200:
                     continue
                 urls[f"image_{idx}"] = src
                 seen.add(src)
