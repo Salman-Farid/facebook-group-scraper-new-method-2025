@@ -7,6 +7,8 @@ from datetime import datetime, timezone
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
+import requests
+from pathlib import Path
 
 # Load environment variables from .env file
 load_dotenv()
@@ -15,6 +17,10 @@ DESIRED_POSTS = 50
 GROUP_URL = "https://www.facebook.com/groups/163690418301859"
 STORAGE_STATE = "facebook_state.json"
 MAX_SCROLLS = 10  # safety limit
+IMAGES_DIR = "images"  # directory to save downloaded images
+
+# Create images directory if it doesn't exist
+Path(IMAGES_DIR).mkdir(parents=True, exist_ok=True)
 
 # Supabase / PostgreSQL connection settings.
 # Must be set in environment variables or .env file
@@ -154,10 +160,29 @@ def extract_post_url(article) -> str | None:
     return None
 
 
-def extract_image_urls(article) -> dict:
+def download_image(url: str, filepath: str) -> bool:
     """
-    Collect CDN image URLs from the post's article container.
-    Returns a dict like {"image_1": "https://…", "image_2": "https://…"}.
+    Download an image from a URL and save it to the specified filepath.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        response = requests.get(url, timeout=10, stream=True)
+        response.raise_for_status()
+        
+        with open(filepath, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+        
+        return True
+    except Exception as e:
+        print(f"      ⚠️  Failed to download image: {e}")
+        return False
+
+
+def extract_image_urls(article, post_hash: str) -> dict:
+    """
+    Collect CDN image URLs from the post's article container and download them.
+    Returns a dict like {"image_1": {"url": "https://…", "local_path": "images/..."}, ...}.
     """
     urls: dict = {}
     if article is None:
@@ -173,12 +198,31 @@ def extract_image_urls(article) -> dict:
                 width_attr = imgs.nth(i).get_attribute("width") or "0"
                 width = int(width_attr) if width_attr.isdigit() else 0
                 if src and src not in seen and width >= 200:
-                    urls[f"image_{idx}"] = src
+                    # Generate a unique filename for this image
+                    filename = f"{post_hash}_{idx}.jpg"
+                    filepath = os.path.join(IMAGES_DIR, filename)
+                    
+                    # Download the image
+                    if download_image(src, filepath):
+                        urls[f"image_{idx}"] = {
+                            "url": src,
+                            "local_path": filepath
+                        }
+                        print(f"      ✓ Image {idx} downloaded: {filename}")
+                    else:
+                        # If download fails, still store the URL
+                        urls[f"image_{idx}"] = {
+                            "url": src,
+                            "local_path": None
+                        }
+                    
                     seen.add(src)
                     idx += 1
-            except Exception:
+            except Exception as e:
+                print(f"      ⚠️  Error processing image {i}: {e}")
                 pass
-    except Exception:
+    except Exception as e:
+        print(f"      ⚠️  Error in extract_image_urls: {e}")
         pass
     return urls
 
@@ -239,7 +283,7 @@ def run_scraper():
 
                     article = get_ancestor_article(elem)
                     post_url = extract_post_url(article)
-                    image_urls = extract_image_urls(article)
+                    image_urls = extract_image_urls(article, post_hash)
                     phone_numbers = extract_phone_numbers(text)
                     hashtags = extract_hashtags(text)
 

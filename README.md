@@ -5,7 +5,7 @@ A robust web scraping tool built with Playwright that extracts posts from Facebo
 ## 🚀 Features
 
 - **Supabase storage**: every scraped post is persisted to the `facebook_group_posts` table instead of a local text file
-- **Image extraction**: collects all CDN image URLs from each post and stores them as a JSON object in the `image_urls` column
+- **Image extraction & download**: collects all CDN image URLs from each post, downloads the images to the local `images/` directory, and stores both the URLs and local file paths as a JSON object in the `image_urls` column
 - **Structured data**: phone numbers and hashtags are extracted automatically and stored in dedicated array columns
 - **Post permalink**: the URL of each post is captured and stored in `post_url`
 - **Smart deduplication**: SHA-256 hash of the post text prevents duplicate rows across scraping sessions
@@ -35,7 +35,7 @@ CREATE TABLE facebook_group_posts (
     post_text     TEXT,
     phone_numbers TEXT[],
     hashtags      TEXT[],
-    image_urls    JSONB,          -- {"image_1": "https://...", "image_2": "https://..."}
+    image_urls    JSONB,          -- {"image_1": {"url": "https://...", "local_path": "images/..."}, ...}
     post_url      TEXT,
     post_hash     TEXT UNIQUE NOT NULL,
     scraped_at    TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -121,6 +121,7 @@ python main.py
 3. **Table does not exist** – run `python supabase_setup.py` to create it
 4. **"See More" not expanding** – add the button label for your locale to `SEE_MORE_TEXTS` in `main.py`
 5. **No images captured** – Facebook CDN URL format may have changed; update the `img[src*='fbcdn']` selector in `extract_image_urls()`
+6. **Images not downloading** – check your internet connection and ensure the `images/` directory has write permissions
 
 ## 📄 License
 
