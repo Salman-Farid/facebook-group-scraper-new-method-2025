@@ -4,6 +4,7 @@ import re
 import hashlib
 import html
 import os
+import unicodedata
 from datetime import datetime, timezone
 from urllib.parse import urlparse
 import psycopg2
@@ -123,8 +124,29 @@ def extract_hashtags(text: str) -> list:
     return list(dict.fromkeys(re.findall(r"#\w+", text)))
 
 
+def normalize_text_for_hash(text: str) -> str:
+    """
+    Normalize text for consistent hashing to prevent duplicates.
+    - Unicode normalization (NFC form)
+    - Convert to lowercase for case-insensitive comparison
+    - Collapse multiple whitespace to single space
+    - Strip leading/trailing whitespace
+    """
+    # Normalize unicode characters to NFC form
+    normalized = unicodedata.normalize('NFC', text)
+    # Convert to lowercase for case-insensitive comparison
+    normalized = normalized.lower()
+    # Collapse multiple spaces/newlines/tabs to single space
+    normalized = re.sub(r'\s+', ' ', normalized)
+    # Strip leading/trailing whitespace
+    normalized = normalized.strip()
+    return normalized
+
+
 def make_post_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    """Generate SHA256 hash of normalized text to detect duplicates."""
+    normalized_text = normalize_text_for_hash(text)
+    return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
 
 
 # ── database helpers ───────────────────────────────────────────────────────────
