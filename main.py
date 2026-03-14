@@ -171,6 +171,22 @@ def ensure_table(conn) -> None:
     print("✅ Table facebook_group_posts is ready.")
 
 
+def post_exists_in_db(conn, post_hash: str) -> bool:
+    """
+    Check if a post with the given hash already exists in the database.
+    Returns True if the post exists, False otherwise.
+    This function ensures strict duplicate checking before attempting to save.
+    """
+    sql = """
+        SELECT 1 FROM facebook_group_posts 
+        WHERE post_hash = %s 
+        LIMIT 1
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (post_hash,))
+        return cur.fetchone() is not None
+
+
 def save_post_to_db(conn, post: dict) -> bool:
     """
     Insert a post into Supabase. Skips silently if post_hash already exists.
@@ -634,8 +650,18 @@ def run_scraper():
                         continue
 
                     post_hash = make_post_hash(text)
+                    
+                    # STRICT duplicate check: First check in-memory cache
                     if post_hash in processed_hashes:
+                        print(f"   ⟳ Post already processed in this session – skipped")
                         continue
+                    
+                    # STRICT duplicate check: Then check database before processing
+                    if post_exists_in_db(conn, post_hash):
+                        print(f"   ⟳ Post already exists in database – skipped")
+                        processed_hashes.add(post_hash)  # Add to cache to avoid future DB checks
+                        continue
+                    
                     processed_hashes.add(post_hash)
 
                     # Log: pre-extraction info (minimal)
