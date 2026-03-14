@@ -10,23 +10,53 @@ from pathlib import Path
 
 IMAGES_DIR = "images"
 
-def download_image(url: str, filepath: str) -> bool:
+def download_image(url: str, filepath_base: str) -> tuple:
     """
     Download an image from a URL and save it to the specified filepath.
-    Returns True if successful, False otherwise.
+    The actual filepath will have the correct extension based on Content-Type.
+    Returns tuple of (success: bool, final_filepath: str | None).
     """
     try:
-        response = requests.get(url, timeout=10, stream=True)
+        # Add User-Agent header to avoid potential blocking
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+        response = requests.get(url, timeout=10, stream=True, headers=headers, verify=True)
         response.raise_for_status()
         
-        with open(filepath, 'wb') as f:
+        # Determine file extension from Content-Type or URL
+        content_type = response.headers.get('Content-Type', '')
+        if 'jpeg' in content_type or 'jpg' in content_type:
+            ext = '.jpg'
+        elif 'png' in content_type:
+            ext = '.png'
+        elif 'gif' in content_type:
+            ext = '.gif'
+        elif 'webp' in content_type:
+            ext = '.webp'
+        else:
+            # Fallback: try to extract from URL
+            url_lower = url.lower()
+            if '.png' in url_lower:
+                ext = '.png'
+            elif '.gif' in url_lower:
+                ext = '.gif'
+            elif '.webp' in url_lower:
+                ext = '.webp'
+            else:
+                ext = '.jpg'  # Default fallback
+        
+        # Add correct extension to filepath
+        final_filepath = filepath_base + ext
+        
+        with open(final_filepath, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 f.write(chunk)
         
-        return True
+        return True, final_filepath
     except Exception as e:
         print(f"      ⚠️  Failed to download image: {e}")
-        return False
+        return False, None
 
 def test_image_download():
     """Test downloading a sample image from the internet."""
@@ -36,29 +66,24 @@ def test_image_download():
     
     # Test with a public sample image (using a reliable test image URL)
     test_url = "https://via.placeholder.com/500x500.jpg"
-    test_filename = "test_image.jpg"
-    test_filepath = os.path.join(IMAGES_DIR, test_filename)
+    test_filename_base = "test_image"
+    test_filepath_base = os.path.join(IMAGES_DIR, test_filename_base)
     
     print(f"Testing image download functionality...")
     print(f"URL: {test_url}")
-    print(f"Destination: {test_filepath}")
-    
-    # Remove test file if it exists
-    if os.path.exists(test_filepath):
-        os.remove(test_filepath)
-        print(f"Removed existing test file")
+    print(f"Destination base: {test_filepath_base}")
     
     # Test the download
-    success = download_image(test_url, test_filepath)
+    success, final_filepath = download_image(test_url, test_filepath_base)
     
-    if success and os.path.exists(test_filepath):
-        file_size = os.path.getsize(test_filepath)
+    if success and final_filepath and os.path.exists(final_filepath):
+        file_size = os.path.getsize(final_filepath)
         print(f"✅ Image download successful!")
         print(f"   File size: {file_size} bytes")
-        print(f"   Location: {test_filepath}")
+        print(f"   Final location: {final_filepath}")
         
         # Clean up test file
-        os.remove(test_filepath)
+        os.remove(final_filepath)
         print(f"   Test file cleaned up")
         return True
     else:
