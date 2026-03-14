@@ -3,7 +3,7 @@ import time
 
 DESIRED_POSTS = 50
 # ⚠️ THAY ĐỔI URL NÀY THÀNH URL NHÓM FACEBOOK CỦA BẠN
-GROUP_URL = "https://www.facebook.com/groups/YOUR_GROUP_ID_HERE"
+GROUP_URL = "https://www.facebook.com/groups/163690418301859"
 OUTPUT_FILE = "fb_posts_output.txt"
 STORAGE_STATE = "facebook_state.json"
 MAX_SCROLLS   = 30    # safety limit
