@@ -4,12 +4,9 @@ import re
 import hashlib
 import os
 from datetime import datetime, timezone
-from typing import Tuple, Optional
 import psycopg2
 import psycopg2.extras
 from dotenv import load_dotenv
-import requests
-from pathlib import Path
 
 # Load environment variables from .env file
 load_dotenv()
@@ -18,10 +15,6 @@ DESIRED_POSTS = 50
 GROUP_URL = "https://www.facebook.com/groups/163690418301859"
 STORAGE_STATE = "facebook_state.json"
 MAX_SCROLLS = 10  # safety limit
-IMAGES_DIR = "images"  # directory to save downloaded images
-
-# Create images directory if it doesn't exist
-Path(IMAGES_DIR).mkdir(parents=True, exist_ok=True)
 
 # Supabase / PostgreSQL connection settings.
 # Must be set in environment variables or .env file
@@ -161,60 +154,11 @@ def extract_post_url(article) -> str | None:
     return None
 
 
-def download_image(url: str, filepath_base: str) -> Tuple[bool, Optional[str]]:
+def extract_image_urls(article) -> dict:
     """
-    Download an image from a URL and save it to the specified filepath.
-    The actual filepath will have the correct extension based on Content-Type.
-    Returns tuple of (success: bool, final_filepath: str | None).
-    """
-    try:
-        # Add User-Agent header to avoid potential blocking
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
-        response = requests.get(url, timeout=10, stream=True, headers=headers, verify=True)
-        response.raise_for_status()
-        
-        # Determine file extension from Content-Type or URL
-        content_type = response.headers.get('Content-Type', '')
-        if 'jpeg' in content_type or 'jpg' in content_type:
-            ext = '.jpg'
-        elif 'png' in content_type:
-            ext = '.png'
-        elif 'gif' in content_type:
-            ext = '.gif'
-        elif 'webp' in content_type:
-            ext = '.webp'
-        else:
-            # Fallback: try to extract from URL
-            url_lower = url.lower()
-            if '.png' in url_lower:
-                ext = '.png'
-            elif '.gif' in url_lower:
-                ext = '.gif'
-            elif '.webp' in url_lower:
-                ext = '.webp'
-            else:
-                ext = '.jpg'  # Default fallback
-        
-        # Add correct extension to filepath
-        final_filepath = filepath_base + ext
-        
-        with open(final_filepath, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
-                f.write(chunk)
-        
-        return True, final_filepath
-    except Exception as e:
-        print(f"      ⚠️  Failed to download image: {e}")
-        return False, None
-
-
-def extract_image_urls(article, post_hash: str) -> dict:
-    """
-    Collect CDN image URLs from the post's article container and download them.
-    Returns a dict like {"image_1": {"url": "https://…", "local_path": "images/..."}, ...}.
-    Only includes successfully downloaded images.
+    Collect CDN image URLs from the post's article container.
+    Returns a dict like {"image_1": "https://…", "image_2": "https://…"}.
+    Returns empty dict {} if no images found.
     """
     urls: dict = {}
     if article is None:
@@ -230,30 +174,12 @@ def extract_image_urls(article, post_hash: str) -> dict:
                 width_attr = imgs.nth(i).get_attribute("width") or "0"
                 width = int(width_attr) if width_attr.isdigit() else 0
                 if src and src not in seen and width >= 200:
-                    # Generate a unique filename base (without extension)
-                    filename_base = f"{post_hash}_{idx}"
-                    filepath_base = os.path.join(IMAGES_DIR, filename_base)
-                    
-                    # Download the image
-                    success, final_filepath = download_image(src, filepath_base)
-                    if success and final_filepath:
-                        urls[f"image_{idx}"] = {
-                            "url": src,
-                            "local_path": final_filepath
-                        }
-                        filename = os.path.basename(final_filepath)
-                        print(f"      ✓ Image {idx} downloaded: {filename}")
-                        # Only mark as seen and increment counter after successful download
-                        seen.add(src)
-                        idx += 1
-                    else:
-                        # Skip failed downloads - don't add to seen set to allow potential retry
-                        print(f"      ⟳ Skipping failed image from {src[:50]}...")
-            except Exception as e:
-                print(f"      ⚠️  Error processing image {i}: {e}")
+                    urls[f"image_{idx}"] = src
+                    seen.add(src)
+                    idx += 1
+            except Exception:
                 pass
-    except Exception as e:
-        print(f"      ⚠️  Error in extract_image_urls: {e}")
+    except Exception:
         pass
     return urls
 
@@ -314,7 +240,7 @@ def run_scraper():
 
                     article = get_ancestor_article(elem)
                     post_url = extract_post_url(article)
-                    image_urls = extract_image_urls(article, post_hash)
+                    image_urls = extract_image_urls(article)
                     phone_numbers = extract_phone_numbers(text)
                     hashtags = extract_hashtags(text)
 

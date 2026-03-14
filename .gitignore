@@ -5,9 +5,6 @@ facebook_state.json
 fb_posts_output.txt
 *.txt
 
-# Downloaded images
-images/
-
 # Python
 __pycache__/
 *.py[cod]
