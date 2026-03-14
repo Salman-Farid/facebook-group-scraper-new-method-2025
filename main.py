@@ -153,10 +153,36 @@ def click_see_more_buttons(page) -> None:
 
 
 def get_ancestor_article(elem):
-    """Return the nearest ancestor <div role='article'> element or None."""
+    """
+    Return the nearest ancestor container for a post.
+    Tries multiple strategies to find the article/post container.
+    """
     try:
+        # Strategy 1: Look for explicit role='article'
         article = elem.locator("xpath=ancestor::div[@role='article'][1]")
-        return article if article.count() > 0 else None
+        if article.count() > 0:
+            return article
+
+        # Strategy 2: Look for data-ad-rendering-role='story' (common in Facebook feeds)
+        article = elem.locator("xpath=ancestor::*[@data-ad-rendering-role='story'][1]")
+        if article.count() > 0:
+            return article
+
+        # Strategy 3: Look for role='article' (case-insensitive via ancestor search)
+        article = elem.locator("xpath=ancestor::*[contains(@role, 'article')][1]")
+        if article.count() > 0:
+            return article
+
+        # Strategy 4: Use the element's parent container (fallback)
+        # This handles cases where the element itself IS the post container
+        parent = elem.locator("xpath=parent::*[1]")
+        if parent.count() > 0:
+            parent_html = parent.inner_html()
+            # Check if parent contains significant content
+            if len(parent_html) > 500:
+                return parent
+
+        return None
     except Exception:
         return None
 
@@ -182,36 +208,39 @@ def extract_post_url(article) -> str | None:
     return None
 
 
-def extract_image_urls(article, post_num: int = 0) -> dict:
+def extract_image_urls(article, post_num: int = 0, elem=None, _depth: int = 0) -> dict:
     """
-    Multi-strategy image extraction with comprehensive debug logging.
-
-    Tries 4 independent strategies and merges results:
-      1. JS querySelectorAll for <img> (currentSrc / src / data-src)
-      2. JS computed-style scan for CSS background-image properties
-      3. JS data-* attribute scan (data-src, data-original, data-imgurl, etc.)
-      4. Regex scan of raw inner-HTML (final fallback)
-
-    Only fbcdn.net URLs are accepted as genuine post images.
-    Images where both naturalWidth and naturalHeight are < 100 px are
-    discarded as avatars / icons (only when dimensions are available).
-
-    Verbose per-post logs are printed so you can trace exactly which
-    strategy found what, and why images might be missing.
+    Multi-strategy image extraction.
+    Tries 5 independent strategies and merges results.
     """
-    tag = f"[IMG Post#{post_num}]"
     urls: dict = {}
     seen: set = set()
 
     if article is None:
-        print(f"   {tag} ⚠  article element is None — skipping image extraction")
+        # Recursion guard: don't go deeper than 2 levels
+        if _depth >= 2:
+            return urls
+
+        # If article is None but elem exists, try to extract from elem directly
+        if elem is not None:
+            try:
+                # Try to find story container ancestors
+                potential_article = elem.locator("xpath=ancestor::*[@data-ad-rendering-role='story'][1]")
+                if potential_article.count() > 0:
+                    return extract_image_urls(potential_article, post_num, None, _depth + 1)
+
+                # If no explicit story container found, use the element's parent as fallback
+                parent = elem.locator("xpath=ancestor::*[1]")
+                if parent.count() > 0:
+                    return extract_image_urls(parent, post_num, None, _depth + 1)
+
+            except Exception:
+                pass
         return urls
 
-    print(f"   {tag} 🔍 Starting multi-strategy image extraction…")
 
     def _add(src: str) -> None:
         """Normalise, de-duplicate and register a URL."""
-        # split() handles any whitespace; takes the first token
         src = html.unescape(src.strip().split()[0]) if src.strip() else ""
         if not src:
             return
@@ -222,10 +251,59 @@ def extract_image_urls(article, post_num: int = 0) -> dict:
         seen.add(src)
         key = f"image_{len(urls) + 1}"
         urls[key] = src
-        print(f"   {tag}  ✅ Captured {key}: {src[:120]}")
+
+    # ── Strategy 0: Story Message Container ────────────────────────────────
+    try:
+        story_info = article.evaluate(
+            """
+            (el) => {
+                const isStoryMsg = el.getAttribute('data-ad-rendering-role') === 'story_message';
+                if (!isStoryMsg) return null;
+                
+                const pictures = el.querySelectorAll('picture');
+                const bgImages = [];
+                const imgs = [];
+                
+                el.querySelectorAll('*').forEach(node => {
+                    const bg = window.getComputedStyle(node).backgroundImage;
+                    if (bg && bg.includes('fbcdn')) {
+                        bgImages.push({ bg, tag: node.tagName });
+                    }
+                    if (node.tagName === 'IMG') {
+                        imgs.push({
+                            src: node.currentSrc || node.src,
+                            tag: 'IMG',
+                            alt: node.getAttribute('alt')
+                        });
+                    }
+                });
+                
+                return {
+                    isStoryMsg,
+                    pictureCount: pictures.length,
+                    bgImageCount: bgImages.length,
+                    imgCount: imgs.length,
+                    bgImages,
+                    imgs
+                };
+            }
+            """
+        )
+
+        if story_info and story_info['isStoryMsg']:
+            for bg_info in story_info['bgImages']:
+                match = re.search(r"url\(['\"]?([^'\"]+)['\"]?\)", bg_info['bg'])
+                if match:
+                    url = match.group(1)
+                    _add(url)
+
+            for img_info in story_info['imgs']:
+                if img_info['src']:
+                    _add(img_info['src'])
+    except Exception:
+        pass
 
     # ── Strategy 1: JS <img> tag scan ────────────────────────────────────────
-    print(f"   {tag} ▶ Strategy 1 — JS <img> tag scan")
     try:
         img_data = article.evaluate(
             """
@@ -239,26 +317,13 @@ def extract_image_urls(article, post_num: int = 0) -> dict:
                         dataOrig:    img.getAttribute('data-original')|| '',
                         naturalW:    img.naturalWidth,
                         naturalH:    img.naturalHeight,
-                        alt:        (img.getAttribute('alt')      || '').slice(0, 80),
-                        cls:        (img.className                || '').slice(0, 80),
                     });
                 });
                 return rows;
             }
             """
         )
-        print(f"   {tag}  Found {len(img_data)} <img> element(s) in DOM")
-        for idx, row in enumerate(img_data):
-            print(
-                f"   {tag}  img[{idx}] "
-                f"naturalSize={row['naturalW']}x{row['naturalH']} "
-                f"alt='{row['alt']}' cls='{row['cls']}'"
-            )
-            print(f"   {tag}           src        = {row['src'][:120] or 'EMPTY'}")
-            print(f"   {tag}           currentSrc = {row['currentSrc'][:120] or 'EMPTY'}")
-            print(f"   {tag}           dataSrc    = {row['dataSrc'][:120] or 'EMPTY'}")
-            print(f"   {tag}           dataOrig   = {row['dataOrig'][:120] or 'EMPTY'}")
-            # Prefer fully-resolved currentSrc, fall back through others
+        for row in img_data:
             for candidate in [
                 row["currentSrc"],
                 row["src"],
@@ -267,67 +332,46 @@ def extract_image_urls(article, post_num: int = 0) -> dict:
             ]:
                 if candidate and _is_fbcdn_url(candidate):
                     w, h = row["naturalW"], row["naturalH"]
-                    # Discard tiny images only when we have real dimension data
                     if w > 0 and h > 0 and w < MIN_IMAGE_DIM and h < MIN_IMAGE_DIM:
-                        print(
-                            f"   {tag}   ↳ Skipped — too small ({w}x{h}), "
-                            f"likely avatar/icon"
-                        )
                         break
                     _add(candidate)
                     break
-            else:
-                if not any(
-                    _is_fbcdn_url(row[k] or "")
-                    for k in ("currentSrc", "src", "dataSrc", "dataOrig")
-                ):
-                    print(f"   {tag}   ↳ No fbcdn.net URL found in this img element")
-    except Exception as exc:
-        print(f"   {tag}  Strategy 1 ERROR: {exc}")
+    except Exception:
+        pass
 
     # ── Strategy 2: CSS background-image scan ────────────────────────────────
-    print(f"   {tag} ▶ Strategy 2 — CSS background-image scan")
     try:
         bg_data = article.evaluate(
             r"""
             (el) => {
                 const results = [];
-                const walk = (node) => {
+                const walk = (node, path = '') => {
                     if (node.nodeType !== 1) return;
                     const bg = window.getComputedStyle(node).backgroundImage || '';
                     const matches = bg.match(/url\(["']?([^"')]+)["']?\)/g) || [];
                     matches.forEach(m => {
                         const inner = m.match(/url\(["']?([^"')]+)["']?\)/);
-                        if (inner) results.push(inner[1]);
+                        if (inner) {
+                            results.push(inner[1]);
+                        }
                     });
-                    node.childNodes.forEach(walk);
+                    node.childNodes.forEach(child => walk(child, path + '/' + node.tagName));
                 };
                 walk(el);
                 return results;
             }
             """
         )
-        print(f"   {tag}  Found {len(bg_data)} background-image URL(s)")
         for bgurl in bg_data:
             if _is_fbcdn_url(bgurl):
-                print(f"   {tag}   ↳ fbcdn.net background: {bgurl[:120]}")
                 _add(bgurl)
-            else:
-                print(f"   {tag}   ↳ Ignored non-fbcdn background: {bgurl[:80]}")
-    except Exception as exc:
-        print(f"   {tag}  Strategy 2 ERROR: {exc}")
+    except Exception:
+        pass
 
     # ── Strategy 3: data-* attribute scan ────────────────────────────────────
-    print(f"   {tag} ▶ Strategy 3 — data-* attribute scan")
     _DATA_ATTRS = [
-        "data-src",
-        "data-original",
-        "data-imgurl",
-        "data-store",
-        "data-url",
-        "data-href",
-        "data-placehold",
-        "data-visualcompletion",
+        "data-src", "data-original", "data-imgurl", "data-store",
+        "data-url", "data-href", "data-placehold", "data-visualcompletion",
         "data-img-fallback",
     ]
     try:
@@ -340,7 +384,7 @@ def extract_image_urls(article, post_num: int = 0) -> dict:
                     ATTRS.forEach(attr => {{
                         const val = node.getAttribute(attr);
                         if (val && val.includes('fbcdn.net')) {{
-                            rows.push({{ attr, val: val.slice(0, 300) }});
+                            rows.push(val.slice(0, 300));
                         }}
                     }});
                 }});
@@ -348,18 +392,12 @@ def extract_image_urls(article, post_num: int = 0) -> dict:
             }}
             """
         )
-        print(f"   {tag}  Found {len(data_hits)} data-* attribute hit(s)")
-        for hit in data_hits:
-            print(f"   {tag}   ↳ [{hit['attr']}] {hit['val'][:120]}")
-            _add(hit["val"])
-    except Exception as exc:
-        print(f"   {tag}  Strategy 3 ERROR: {exc}")
+        for hit_val in data_hits:
+            _add(hit_val)
+    except Exception:
+        pass
 
     # ── Strategy 4: raw inner-HTML regex (final fallback) ────────────────────
-    # Matches fbcdn.net URLs ending in common image formats (jpg/jpeg/png/webp/avif).
-    # Backslashes are excluded from the URL character class to avoid matching
-    # JSON-escaped strings as valid URL fragments.
-    print(f"   {tag} ▶ Strategy 4 — raw inner-HTML regex fallback")
     try:
         raw_html = article.inner_html()
         raw_hits = re.findall(
@@ -367,35 +405,11 @@ def extract_image_urls(article, post_num: int = 0) -> dict:
             r"\.(?:jpg|jpeg|png|webp|avif)[^\s\"'<>\\]*",
             raw_html,
         )
-        print(f"   {tag}  Regex found {len(raw_hits)} raw URL(s) in HTML")
         for raw in raw_hits:
             unescaped = html.unescape(raw)
-            print(f"   {tag}   ↳ {unescaped[:120]}")
             _add(unescaped)
-    except Exception as exc:
-        print(f"   {tag}  Strategy 4 ERROR: {exc}")
-
-    # ── Summary / diagnostic dump ─────────────────────────────────────────────
-    if urls:
-        print(f"   {tag} ✅ Total unique images captured: {len(urls)}")
-    else:
-        print(f"   {tag} ❌ No images found after all 4 strategies.")
-        print(
-            f"   {tag} 📄 Dumping first {DEBUG_HTML_SNIPPET_LEN} chars of "
-            f"article HTML for diagnosis:"
-        )
-        try:
-            snippet = article.inner_html()
-            print("   " + "-" * 72)
-            for line in snippet[:DEBUG_HTML_SNIPPET_LEN].splitlines():
-                print(f"   {tag}   {line}")
-            if len(snippet) > DEBUG_HTML_SNIPPET_LEN:
-                print(
-                    f"   {tag}   … (truncated; total length {len(snippet)} chars)"
-                )
-            print("   " + "-" * 72)
-        except Exception as dump_exc:
-            print(f"   {tag}  Could not dump HTML: {dump_exc}")
+    except Exception:
+        pass
 
     return urls
 
@@ -454,7 +468,26 @@ def run_scraper():
                         continue
                     processed_hashes.add(post_hash)
 
+                    # Log: pre-extraction info (minimal)
+                    print(f"   [Post#{posts_saved + 1}] 🔍 Processing post (text length: {len(text)} chars)")
+                    print(f"   [Post#{posts_saved + 1}] 📝 Text preview: {text[:100]}{'…' if len(text) > 100 else ''}")
+
                     article = get_ancestor_article(elem)
+
+                    if article is None:
+                        print(f"   [Post#{posts_saved + 1}] ⚠️  No article ancestor found. Inspecting elem location…")
+                        elem_info = elem.evaluate(
+                            """
+                            (el) => {
+                                return {
+                                    tag: el.tagName,
+                                    dataAdRole: el.getAttribute('data-ad-rendering-role'),
+                                    className: el.className.slice(0, 100),
+                                };
+                            }
+                            """
+                        )
+                        print(f"   [Post#{posts_saved + 1}] 📌 Element: <{elem_info['tag']}> class='{elem_info['className'][:80]}'")
 
                     # Scroll the article into view and pause so lazy-load images
                     # have a chance to fire their network requests and resolve
@@ -469,7 +502,7 @@ def run_scraper():
                             pass
 
                     post_url = extract_post_url(article)
-                    image_urls = extract_image_urls(article, post_num=posts_saved + 1)
+                    image_urls = extract_image_urls(article, post_num=posts_saved + 1, elem=elem)
                     phone_numbers = extract_phone_numbers(text)
                     hashtags = extract_hashtags(text)
 
