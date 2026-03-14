@@ -8,9 +8,12 @@ A robust web scraping tool built with Playwright that extracts posts from Facebo
 - **Image extraction**: collects all CDN image URLs from each post and stores them as a JSON object in the `image_urls` column
 - **Structured data**: phone numbers and hashtags are extracted automatically and stored in dedicated array columns
 - **Post permalink**: the URL of each post is captured and stored in `post_url`
-- **Smart deduplication**: SHA-256 hash of normalized post text prevents duplicate rows across scraping sessions
+- **Strict duplicate prevention**: Multi-layered approach ensures zero duplicate posts in the database
   - Text normalization handles whitespace variations, unicode differences, and case sensitivity
-  - Prevents the same post from being saved multiple times during scrolling
+  - In-memory cache prevents reprocessing posts within the same session
+  - Database pre-check validates posts don't exist before processing
+  - UNIQUE constraint on `post_hash` provides final database-level protection
+  - Works across multiple scraper runs - no duplicates ever
 - **Multi-language "See more"**: expands truncated posts for English, Vietnamese, German and Spanish UIs
 - **Session management**: saves login state for seamless re-authentication
 - **Error resilience**: robust error handling for network issues and DOM changes
@@ -128,11 +131,13 @@ python test_duplicate_detection.py
 1. **`FileNotFoundError: facebook_state.json`** – run `login_and_save_state.py` first
 2. **`psycopg2.OperationalError`** – verify `DB_CONFIG` credentials in `main.py`
 3. **Table does not exist** – run `python supabase_setup.py` to create it
-4. **Duplicate posts in database** – The scraper now uses text normalization to prevent duplicates:
-   - Whitespace variations (spaces, tabs, newlines) are normalized
-   - Unicode characters are normalized to NFC form
-   - Case differences are ignored
-   - If you're still seeing duplicates, run `python test_duplicate_detection.py` to verify the fix is working
+4. **Duplicate posts in database** – The scraper uses **strict multi-layered duplicate prevention**:
+   - Text normalization handles whitespace variations, unicode differences, and case sensitivity
+   - In-memory cache prevents reprocessing within the same session
+   - Database pre-check ensures posts don't exist before processing
+   - UNIQUE constraint provides final database-level protection
+   - See `STRICT_DUPLICATE_CHECK.md` for detailed implementation
+   - If you suspect duplicates, run `python test_strict_duplicate_check.py` (requires DB credentials)
 5. **"See More" not expanding** – add the button label for your locale to `SEE_MORE_TEXTS` in `main.py`
 6. **No images captured** – the scraper now uses 4 independent extraction strategies
    with full debug output per post. Read the `[IMG Post#N]` log lines to see exactly
