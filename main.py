@@ -158,6 +158,7 @@ def extract_image_urls(article) -> dict:
     """
     Collect CDN image URLs from the post's article container.
     Returns a dict like {"image_1": "https://…", "image_2": "https://…"}.
+    Returns empty dict {} if no images found.
     """
     urls: dict = {}
     if article is None:

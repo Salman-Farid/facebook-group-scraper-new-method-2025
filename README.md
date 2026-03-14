@@ -35,7 +35,7 @@ CREATE TABLE facebook_group_posts (
     post_text     TEXT,
     phone_numbers TEXT[],
     hashtags      TEXT[],
-    image_urls    JSONB,          -- {"image_1": "https://...", "image_2": "https://..."}
+    image_urls    JSONB,          -- {"image_1": "https://...", "image_2": "https://..."} or {}
     post_url      TEXT,
     post_hash     TEXT UNIQUE NOT NULL,
     scraped_at    TIMESTAMPTZ NOT NULL DEFAULT now()
