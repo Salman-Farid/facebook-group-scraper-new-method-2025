@@ -163,20 +163,38 @@ def extract_image_urls(article) -> dict:
     urls: dict = {}
     if article is None:
         return urls
+    # URL sub-strings that identify small profile/avatar thumbnails to skip
+    _SKIP_PATTERNS = ("/t1.6435-1/", "/t1.6435-9/", "s50x50", "s60x60", "s120x120")
     try:
         imgs = article.locator("img[src*='fbcdn']")
         seen: set = set()
         idx = 1
         for i in range(imgs.count()):
             try:
-                src = imgs.nth(i).get_attribute("src") or ""
-                # Skip tiny profile/avatar images (usually <200px wide)
-                width_attr = imgs.nth(i).get_attribute("width") or "0"
-                width = int(width_attr) if width_attr.isdigit() else 0
-                if src and src not in seen and width >= 200:
-                    urls[f"image_{idx}"] = src
-                    seen.add(src)
-                    idx += 1
+                img = imgs.nth(i)
+                src = img.get_attribute("src") or ""
+                if not src or src in seen:
+                    continue
+                # Skip obvious profile/avatar thumbnails by URL pattern
+                if any(pat in src for pat in _SKIP_PATTERNS):
+                    continue
+                # Use the image's natural pixel width (requires image to be
+                # loaded in the DOM).  Falls back to the HTML width attribute,
+                # then to 0 if neither is available.
+                try:
+                    result = img.evaluate("el => el.naturalWidth")
+                    natural_width = result if isinstance(result, int) else 0
+                except Exception:
+                    natural_width = 0
+                if natural_width == 0:
+                    width_attr = img.get_attribute("width") or "0"
+                    natural_width = int(width_attr) if width_attr.isdigit() else 0
+                # Skip tiny images (profile pictures, icons, etc.)
+                if 0 < natural_width < 200:
+                    continue
+                urls[f"image_{idx}"] = src
+                seen.add(src)
+                idx += 1
             except Exception:
                 pass
     except Exception:
